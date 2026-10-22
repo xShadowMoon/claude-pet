@@ -1,0 +1,16 @@
+# 运行时生成的东西：用量缓存、额度缓存、日志、调试截图
+data/
+__pycache__/
+*.pyc
+
+# 装 hook 时按本机路径生成
+wake.vbs
+
+# 角色素材有版权，不放进仓库（见 assets/README.md）
+assets/*
+!assets/README.md
+
+# 打包产物
+build/
+dist/
+*.spec
