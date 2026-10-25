@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Read-only Codex Desktop/CLI adapter. No API key, notify replacement, or hooks.
+"""读取 Codex 会话状态、额度和任务变化。
 
 Codex owns the transcripts. Read only complete JSONL lines and keep byte offsets;
 read the thread database in mode=ro for titles/paths, with a file-only fallback.
