@@ -1,4 +1,4 @@
-"""Mini chat transports: Claude's CLI and Codex's local stdio app-server.
+"""连接双助手 Mini 聊天并处理流式回复与审批。
 
 Only Mini-owned conversation ids are resumed. Prompts are stdin/JSON data,
 never shell commands. Provider CLIs handle the user's existing sign-in.
