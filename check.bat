@@ -1,4 +1,5 @@
 @echo off
+rem Purpose: Run the desktop pet environment and integration self-check.
 chcp 65001 >nul
 cd /d "%~dp0"
 where python >nul 2>&1
