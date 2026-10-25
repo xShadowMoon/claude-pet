@@ -1,5 +1,7 @@
 # Claude + Codex 二合一桌宠
 
+项目导航：[核心模块说明](petapp/README.md) · [测试方法](tests/README.md) · [素材准备](assets/README.md) · [素材来源](CREDITS.md)
+
 **3.3 版：面板按助手分组，血条仅悬停显示。**
 
 - 顶部是 **Claude / Codex 两个大标签**。进入后各有 **额度 / 会话 / 统计** 三个子页，会话列表和统计只显示对应助手的数据。
@@ -283,7 +285,12 @@ claude-pet/
 │   ├── window.py               窗口、物理、交互、菜单、把各部分串起来
 │   ├── sessions.py             多会话追踪（谁在干嘛、谁在等你）
 │   ├── usage.py                额度接口 + 本机用量统计 + 价格表
-│   ├── panel.py                用量面板
+│   ├── chat.py                 Mini 的 Claude CLI / Codex app-server 接入
+│   ├── codex.py                Codex 会话和额度的本机只读接入
+│   ├── codex_stats.py          Codex 历史统计与响应去重
+│   ├── hotkey.py               Mini 全局快捷键
+│   ├── mini.py                 迷你聊天与任务窗口
+│   ├── panel.py                分助手的额度、会话和统计面板
 │   ├── hud.py                  头顶血条
 │   ├── approval.py             审批卡片
 │   ├── server.py               本地事件服务
@@ -294,7 +301,8 @@ claude-pet/
 │   ├── bubble.py               气泡
 │   ├── states.py               动作表 + 事件映射（要改就改这个）
 │   └── common.py               路径、格式化、配色
-├── assets/                     九个动作的 GIF
+├── assets/                     自备九种动作 GIF，仓库仅保留说明
+├── tests/                      聊天、会话解析和历史统计的回归测试
 ├── data/                       运行时生成：用量缓存、额度缓存、日志
 ├── pet.py                      命令行遥控器
 ├── install_hooks.py            写 hook 的脚本
