@@ -1,4 +1,5 @@
 @echo off
+rem Purpose: Install the GUI and system-monitoring Python dependencies.
 chcp 65001 >nul
 cd /d "%~dp0"
 echo 正在安装 PySide6，第一次会有点慢...
