@@ -1,4 +1,4 @@
-"""Incremental local Codex usage totals; cached input is a subset of input.
+"""增量汇总 Codex 历史用量并防止重复计数。
 
 Prefer response-level usage records. Legacy token_count snapshots provide a
 fallback, never an additional charge for a response already recorded.
