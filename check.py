@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""桌宠自检。
+"""检查 Python、依赖、素材、hooks 和本地连接。
 
 一路查下来，哪一步断了会直接告诉你怎么修。
 用法：双击 check.bat，或者 python check.py
