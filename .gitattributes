@@ -1,3 +1,4 @@
+# 文本与脚本的跨平台换行约定；二进制素材不做文本转换。
 * text=auto
 *.sh text eol=lf
 *.cmd text eol=crlf
