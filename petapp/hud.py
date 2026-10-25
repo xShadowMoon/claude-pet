@@ -13,8 +13,8 @@ from PySide6.QtWidgets import QWidget
 
 from .common import INK, MUTED, PINK, WEEK, fmt_hm, remain_rgb
 
-W = 128
-H = 30
+W = 222
+H = 62
 
 
 class QuotaHud(QWidget):
@@ -34,6 +34,13 @@ class QuotaHud(QWidget):
         self.week = None
         self.stale = False
         self.note = "额度 ?"
+        self.codex_five = None
+        self.codex_reset = None
+        self.codex_week = None
+        self.codex_stale = False
+        self.codex_enabled = True
+        self._claude_tip = ""
+        self._codex_tip = ""
         self._font = QFont()
         self._font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI"])
         self._font.setPixelSize(11)
@@ -48,8 +55,24 @@ class QuotaHud(QWidget):
         self.week = week
         self.stale = stale
         self.note = note or "额度 ?"
-        self.setToolTip(tip)
+        self._claude_tip = tip
+        self._update_tip()
         self.update()
+
+    def set_codex(self, five=None, five_reset=None, week=None, stale=False, tip="", enabled=True):
+        self.codex_five, self.codex_reset, self.codex_week = five, five_reset, week
+        self.codex_stale, self.codex_enabled = stale, enabled
+        self._codex_tip = tip
+        self.resize(W, H if enabled else 32)
+        self._update_tip()
+        self.update()
+
+    def _update_tip(self):
+        self.setToolTip("Claude\n" + self._claude_tip + ("\n\n" + self._codex_tip if self.codex_enabled else ""))
+
+    def set_claude_tip(self, tip):
+        self._claude_tip = tip
+        self._update_tip()
 
     def anchor_to(self, cx, bottom_y):
         self.move(int(cx - self.width() / 2), int(bottom_y - self.height()))
@@ -68,24 +91,28 @@ class QuotaHud(QWidget):
         p.setBrush(QColor(255, 253, 254, 232))
         p.drawRoundedRect(body, 9, 9)
 
-        if self.five is None:
-            p.setFont(self._font)
-            p.setPen(QColor(*MUTED))
-            p.drawText(body, Qt.AlignCenter, self.note)
-            return
+        self._draw_row(p, 1, "Claude", self.five, self.five_reset, self.week, self.stale, self.note)
+        if self.codex_enabled:
+            self._draw_row(p, 31, "Codex", self.codex_five, self.codex_reset,
+                           self.codex_week, self.codex_stale, "等待用量记录")
 
-        remain = max(0.0, 100.0 - self.five)
+    def _draw_row(self, p, y, label, used, reset, week, stale, note):
+        w = self.width()
         p.setFont(self._font)
-        p.setPen(QColor(*(MUTED if self.stale else INK)))
-        p.drawText(QRectF(8, 2, w - 16, 14), Qt.AlignLeft | Qt.AlignVCenter, f"5h 剩{remain:.0f}%")
-        left = (self.five_reset or 0) - time.time()
+        p.setPen(QColor(*(MUTED if stale else INK)))
+        if used is None:
+            p.drawText(QRectF(8, y + 2, w - 16, 20), Qt.AlignLeft | Qt.AlignVCenter, f"{label} · {note}")
+            return
+        remain = max(0.0, 100.0 - used)
+        p.drawText(QRectF(8, y + 2, w - 16, 14), Qt.AlignLeft | Qt.AlignVCenter, f"{label} 5h 剩{remain:.0f}%")
+        left = (reset or 0) - time.time()
         p.setFont(self._small)
         p.setPen(QColor(*MUTED))
-        p.drawText(QRectF(8, 2, w - 16, 14), Qt.AlignRight | Qt.AlignVCenter,
-                   f"{fmt_hm(left)} 重置" if left > 0 else "刷新中")
-        self._bar(p, QRectF(8, 17, w - 16, 5), remain / 100.0, QColor(*remain_rgb(remain)))
-        if self.week is not None:
-            self._bar(p, QRectF(8, 24, w - 16, 3), max(0.0, 100.0 - self.week) / 100.0, QColor(*WEEK))
+        suffix = f"{fmt_hm(left)} 重置" if left > 0 else "待更新"
+        p.drawText(QRectF(8, y + 2, w - 16, 14), Qt.AlignRight | Qt.AlignVCenter, suffix)
+        self._bar(p, QRectF(8, y + 17, w - 16, 5), remain / 100.0, QColor(*remain_rgb(remain)))
+        if week is not None:
+            self._bar(p, QRectF(8, y + 24, w - 16, 3), max(0.0, 100.0 - week) / 100.0, QColor(*WEEK))
 
     @staticmethod
     def _bar(p, rect, frac, color):

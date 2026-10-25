@@ -35,9 +35,12 @@ from .animator import Animator
 from .approval import ApprovalCard
 from .bubble import Bubble
 from .common import APP_DIR, ASSET_DIR, data_path, fmt_clock, fmt_money, fmt_span, fmt_tokens
+from .codex import CodexMonitor
+from .chat import ChatHub
+from .hotkey import MiniHotkey
 from .hud import QuotaHud
 from .server import BRIDGE, PENDING, STATUS, EventServer
-from .sessions import STATE_RGB, SessionTracker, clip
+from .sessions import STATE_RGB, Session, SessionTracker, clip, project_of
 from .states import (
     AMBIENT_MAP,
     DEFAULT_STATE,
@@ -74,7 +77,8 @@ APPROVAL_WAIT_CHOICES = [(60, "1 分钟"), (120, "2 分钟"), (300, "5 分钟")]
 TRAY_RGB = {"waiting": STATE_RGB["waiting"], "error": STATE_RGB["error"],
             "working": STATE_RGB["working"], "done": STATE_RGB["done"]}
 PANEL_TABS = {"额度": 0, "quota": 0, "统计": 1, "用量": 1, "stats": 1, "会话": 2, "sessions": 2,
-              "电脑": 3, "system": 3}
+              "电脑": 3, "system": 3, "codex": 4, "Codex": 4,
+              "codex-sessions":5,"codex-stats":6}
 
 STAT_LABELS = [
     ("sessions", "开过的会话"),
@@ -109,7 +113,7 @@ class Pet(QWidget):
         super().__init__()
         self.settings = QSettings("ClaudePet", "ClaudePet")
 
-        self.setWindowTitle("Claude 桌宠")
+        self.setWindowTitle("Claude + Codex 桌宠")
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )
@@ -138,6 +142,7 @@ class Pet(QWidget):
         self.privacy = st.value("privacy", False, type=bool)
         self.sound_on = st.value("sound", False, type=bool)
         self.idle_cleanup_min = int(st.value("idle_cleanup", 30))
+        self.codex_on = st.value("codex", True, type=bool)
 
         # ---- 动画 ----
         self.anim = Animator(ASSET_DIR)
@@ -202,6 +207,15 @@ class Pet(QWidget):
         self.usage.local_changed.connect(self.on_local_usage)
         self.usage.turn_cost.connect(self.on_turn_cost)
         self.tracker = SessionTracker()
+        self.codex = CodexMonitor()
+        self.codex.enabled = self.codex_on
+        self.codex.updated.connect(self.on_codex)
+        self.codex.quota_changed.connect(self.on_codex_quota)
+        self._codex_marks = {}
+        self.chat = ChatHub()
+        self.mini = None
+        self._mini_request_keys = set()
+        self.chat.changed.connect(self._mini_changed)
         self.card = ApprovalCard()
         self.card.decided.connect(self.on_card_decided)
         self.card.focus_requested.connect(self.focus_session)
@@ -213,6 +227,7 @@ class Pet(QWidget):
         self._started_at = time.time()
         self._greeted_quota = False
         self._hud_raise_at = 0.0
+        self._hud_hover_until = 0.0
         self._last_sweep = 0.0
         self._last_rescue = time.time()
         self._card_anchor = None
@@ -243,7 +258,11 @@ class Pet(QWidget):
         self._last_tick = time.time()
 
         self._build_tray()
+        self.mini_hotkey = MiniHotkey(self.open_mini)
+        self._mini_changed()
         self.usage.start()
+        self.codex.start()
+        QTimer.singleShot(350, self.on_codex_quota)
         QTimer.singleShot(300, self.on_quota)        # 先用上次存下的额度把血条画出来
 
         QTimer.singleShot(600, lambda: self.trigger("session_start", {}, from_hook=False))
@@ -293,9 +312,13 @@ class Pet(QWidget):
 
     def _derived_base(self):
         """按会话和专注模式，现在该摆什么常驻表情。都没有就返回 None。"""
+        if self.chat.requests:
+            return 'waiting'
         shown = self.tracker.display()
         if shown:
             return shown
+        if any(self.chat.busy.values()):
+            return 'thinking'
         if self.focus_on:
             return "working" if self.focus_phase == "work" else "resting"
         return None
@@ -313,6 +336,9 @@ class Pet(QWidget):
 
     def trigger(self, name, data, from_hook=True):
         data = data or {}
+        if name == 'mini':
+            self.open_mini(force_show=True, tab=1 if data.get('text') in ('tasks','任务') else 0)
+            return
         if name == "say":
             text = (data.get("text") or "").strip()
             if text:
@@ -410,6 +436,78 @@ class Pet(QWidget):
             self._react(event, upd, s)
         self._refresh_views()
 
+    def on_codex(self, data):
+        """Codex snapshots use a separate id namespace; never enter Claude accounting."""
+        if not self.codex_on:
+            return
+        sid = data['id']
+        if data.get('removed'):
+            self.tracker.sessions.pop(sid,None)
+            self._refresh_views()
+            return
+        for record in self.chat.records.values():
+            if record.get('provider')!='codex' or 'codex:'+record.get('session_id','')!=sid:
+                continue
+            if record.get('last_status') in ('completed','interrupted','error') and \
+                    data.get('last_event_at',0)<=record.get('finished_at',0):
+                status=record['last_status']
+                data=dict(data,state='error' if status=='error' else 'idle',kind='idle',
+                          turn_started_at=None,activity='Mini 已停止' if status=='interrupted' else 'Mini 已结束')
+                if status!='completed':
+                    data['event']=None
+            break
+        now = time.time()
+        if data.get('bootstrap') and data['state'] == 'idle' and self.idle_cleanup_min and \
+                now - data['last_event_at'] > self.idle_cleanup_min * 60:
+            return
+        s = self.tracker.sessions.get(sid)
+        if s is None:
+            s = self.tracker.sessions[sid] = Session(sid)
+        s.provider = 'codex'
+        for key in ('cwd', 'title', 'source', 'state', 'kind', 'activity', 'last_event_at',
+                    'turn_started_at', 'turns', 'last_message', 'unseen', 'model',
+                    'context_pct', 'tokens', 'turn_tokens', 'todo_done', 'todo_total', 'transcript'):
+            if key in data:
+                setattr(s, key, data[key])
+        s.project = project_of(s.cwd)
+        s.changed = set(data.get('changed') or [])
+        s.waiting_for = s.activity if s.state == 'waiting' else ''
+        ev = data.get('event')
+        if ev:
+            self._claude_at = self._last_event_at = now
+            if ev == 'activity':
+                ev = {'running':'tool_bash', 'reading':'tool_read', 'web':'tool_web',
+                      'agent':'tool_agent'}.get(s.kind, 'tool_other')
+            if ev != 'interrupt':
+                upd = {'event': ev, 'session': s, 'bubble': s.activity, 'generic': 'Codex 在干活',
+                       'message': s.last_message, 'error': s.activity}
+                self._react(ev, upd, s)
+                if ev == 'done' and self.bubble.isVisible() and s.turn_tokens:
+                    if not any(w is not s for w in self.tracker.waiting()):
+                        self.bubble.set_sub(f"Codex 本轮 {fmt_tokens(s.turn_tokens)} tokens（本机记录）")
+        self._refresh_views()
+
+    def on_codex_quota(self):
+        five, week = self.codex.window('five_hour'), self.codex.window('seven_day')
+        self.hud.set_codex(five=five['used'] if five else None,
+                           five_reset=five.get('resets_at') if five else None,
+                           week=week['used'] if week else None,
+                           stale=self.codex.quota_age() > 1200 or bool(five and five.get('expired')),
+                           tip=self.codex.tooltip(), enabled=self.codex_on)
+        STATUS['codex_usage'] = {'brief': self.codex.brief(), 'quota': self.codex.quota,
+                                 'enabled': self.codex_on, 'error': self.codex.error}
+        if self.quota_alerts_on and not self.dnd and self.codex.quota_age() < 1200:
+            for w in (five, week):
+                if not w or w.get('expired'):
+                    continue
+                level = next((n for n in (100, 95, 80) if w['used'] >= n), 0)
+                key = (w['key'], w.get('resets_at'))
+                previous = self._codex_marks.get(key)
+                self._codex_marks[key] = level
+                if previous is not None and level > previous and level:
+                    self.say(f"Codex {w['label']}只剩 {max(0, 100-w['used']):.0f}% 了", 5500)
+        self._update_tray(force_tip=True)
+
     def _enrich(self, sid):
         """给会话补上好认的名字（对话标题）和它所在的窗口。"""
         s = self.tracker.sessions.get(sid) if sid else None
@@ -435,12 +533,15 @@ class Pet(QWidget):
             self._save_stats()
 
         text = self._event_text(event, rule, upd)
-        if text and s is not None and len(self.tracker.sessions) > 1:
-            text = f"[{clip(s.name(), 12)}] {text}"
+        if text and s is not None:
+            provider = "Codex" if s.provider == "codex" else "Claude"
+            text = f"[{provider} · {clip(s.name(), 12)}] {text}" if len(self.tracker.sessions) > 1 else f"[{provider}] {text}"
         if self.dnd or self.card.isVisible():
             text = ""
 
         others_waiting = any(w is not s for w in self.tracker.waiting())
+        if others_waiting and rule['state'] != 'waiting':
+            return  # Neither provider may override another session's request for attention.
         if rule["kind"] == "once":
             reset = rule.get("reset_base")
             if reset:
@@ -645,6 +746,8 @@ class Pet(QWidget):
         if s is None:
             return False
         hwnd, title = winutil.session_window(s.pids)
+        if not hwnd and s.provider == 'codex':
+            hwnd, title = winutil.provider_window('codex')
         if hwnd and winutil.focus_window(hwnd):
             s.window_title = title
             s.unseen = False
@@ -669,6 +772,45 @@ class Pet(QWidget):
         self.panel.show_near(self.frameGeometry())
         self.usage.refresh_quota()
 
+    def open_mini(self, force_show=False, tab=None):
+        from .mini import MiniWindow
+        if self.mini is None:
+            self.mini = MiniWindow(self)
+        if self.mini.isVisible() and not force_show and tab is None:
+            self.mini.hide()
+            return
+        if tab is not None:
+            self.mini.show_tab(tab)
+        self.mini.show_near(self.frameGeometry())
+        STATUS.setdefault('mini',{})['visible']=True
+
+    def _mini_changed(self):
+        for provider in ('claude','codex'):
+            record=self.chat.record(provider)
+            if not self.chat.busy[provider] and record.get('last_status') in ('completed','interrupted','error'):
+                sid=('codex:' if provider=='codex' else '')+record.get('session_id','')
+                s=self.tracker.sessions.get(sid)
+                if s is not None and s.last_event_at<=record.get('finished_at',0):
+                    s.state='error' if record['last_status']=='error' else 'idle'
+                    s.kind='idle'
+                    s.turn_started_at=None
+                    s.waiting_for=''
+                    s.activity=self.chat.activity[provider]
+        STATUS['mini'] = {'busy':dict(self.chat.busy),'activity':dict(self.chat.activity),
+                          'waiting':len(self.chat.requests),
+                          'visible':bool(self.mini is not None and self.mini.isVisible()),
+                          'hotkey':getattr(getattr(self,'mini_hotkey',None),'label','点桌宠打开')}
+        keys = set(self.chat.requests)
+        new_requests = keys - self._mini_request_keys
+        self._mini_request_keys = keys
+        if new_requests and not self.dnd:
+            self.open_mini(force_show=True,tab=0)
+            request = next(iter(self.chat.requests.values()))
+            self.mini.select_provider(request['provider'])
+            self.base_state = 'waiting'
+            self._overlay_until = 0.
+            self._apply_state('waiting')
+
     def on_quota(self):
         five = self.usage.window("five_hour")
         week = self.usage.window("seven_day")
@@ -687,7 +829,7 @@ class Pet(QWidget):
 
     def on_local_usage(self):
         STATUS["usage"] = self.usage.cli_summary()
-        self.hud.setToolTip(self.usage.tooltip())
+        self.hud.set_claude_tip(self.usage.tooltip())
 
     def on_turn_cost(self, sid, info):
         s = self.tracker.sessions.get(sid)
@@ -858,6 +1000,14 @@ class Pet(QWidget):
             self.stats = {}
             self._save_stats()
         self.tracker.cleanup(self.idle_cleanup_min * 60, now)
+        if self.chat.requests:
+            # A live Mini approval is more authoritative than delayed JSONL events.
+            for (provider,_),req in self.chat.requests.items():
+                record = self.chat.record(provider)
+                sid = ('codex:' if provider == 'codex' else '') + record.get('session_id','')
+                s = self.tracker.sessions.get(sid)
+                if s is not None:
+                    s.state, s.kind, s.waiting_for = 'waiting','waiting','Mini 在等你处理'
         for wid, w in list(self.widgets.items()):
             if w["ttl"] and now - w["at"] > w["ttl"]:
                 del self.widgets[wid]
@@ -1165,6 +1315,7 @@ class Pet(QWidget):
         self.bubble.anchor_to(self.x() + self.width() / 2, top)
 
     def _place_hud(self, now):
+        self._sync_hud_hover(now)
         if not self.hud.isVisible():
             return
         self.hud.anchor_to(self.x() + self.width() / 2, self._head_top() + 6)
@@ -1173,6 +1324,26 @@ class Pet(QWidget):
             self._hud_raise_at = now
             self.hud.raise_()
             self.hud.update()
+
+    def _sync_hud_hover(self,now,position=None):
+        if not self.hud_on or not self.isVisible():
+            self.hud.hide()
+            self._hud_hover_until=0.
+            return
+        self.hud.anchor_to(self.x()+self.width()/2,self._head_top()+6)
+        position=position if position is not None else QCursor.pos()
+        on_pet=self.frameGeometry().contains(position)
+        on_hud=False
+        if self.hud.isVisible():
+            # Keep the short gap between the character and clickable HUD usable.
+            area=self.frameGeometry().united(self.hud.frameGeometry()).adjusted(-4,-4,4,4)
+            on_hud=area.contains(position)
+        if on_pet or on_hud:
+            self._hud_hover_until=now+.32
+            if not self.hud.isVisible():
+                self.hud.show()
+        elif now>=self._hud_hover_until:
+            self.hud.hide()
 
     def _restore_position(self):
         saved = self.settings.value("anchor")
@@ -1264,10 +1435,7 @@ class Pet(QWidget):
 
         if not was_drag:
             self.play_once("patted")
-            # 有会话在等你、或者做完了你还没看，顺手把它的窗口叫出来
-            target = self.tracker.attention()
-            if target is not None and not self.card.isVisible():
-                QTimer.singleShot(120, lambda sid=target.id: self.focus_session(sid))
+            self.open_mini()
         else:
             self._throw()
             self._save_position()
@@ -1350,7 +1518,7 @@ class Pet(QWidget):
     def _sessions_line(self):
         n = len(self.tracker.sessions)
         if not n:
-            return "现在没有 Claude Code 会话"
+            return "现在没有 Claude / Codex 会话"
         busy = len(self.tracker.busy())
         waiting = len(self.tracker.waiting())
         parts = [f"{n} 个会话"]
@@ -1362,6 +1530,12 @@ class Pet(QWidget):
 
     def build_menu(self):
         menu = QMenu(self)
+        mini = QAction('迷你聊天 / 任务窗口',menu)
+        mini.triggered.connect(lambda:self.open_mini(force_show=True))
+        menu.addAction(mini)
+        hotkey = getattr(self,'mini_hotkey',None)
+        if hotkey:
+            self._info(menu, 'Mini 快捷键：' + hotkey.label)
 
         self._info(menu, f"当前：{STATES[self.state]['label']}{self.focus_left_text()}")
         self._info(menu, self.usage.brief())
@@ -1395,7 +1569,7 @@ class Pet(QWidget):
         show_menu = menu.addMenu("显示")
         self._check(show_menu, "总在最前", "on_top", "on_top")
         self._check(show_menu, "显示气泡", "bubble_on", "bubble")
-        self._check(show_menu, "头顶显示额度血条", "hud_on", "hud")
+        self._check(show_menu, "鼠标悬停时显示额度血条", "hud_on", "hud")
         self._check(show_menu, "移动时用跑步动作", "use_walk_art", "walk_art")
         self._check(show_menu, "隐私模式（分享屏幕时用，不显示命令和文件名）", "privacy", "privacy")
 
@@ -1428,6 +1602,16 @@ class Pet(QWidget):
         act = QAction("马上刷新额度", cc_menu)
         act.triggered.connect(lambda: self.usage.refresh_quota(force=True))
         cc_menu.addAction(act)
+
+        cx_menu = menu.addMenu("Codex")
+        self._check(cx_menu, "同时跟随 Codex（读取本机记录）", "codex_on", "codex")
+        act = QAction("Codex 额度和用量", cx_menu)
+        act.triggered.connect(lambda: self.open_panel(force_show=True, tab=4))
+        cx_menu.addAction(act)
+        act = QAction("马上扫描 Codex 状态", cx_menu)
+        act.triggered.connect(self.codex.refresh_quota)
+        cx_menu.addAction(act)
+        self._info(cx_menu, "Codex 提问和审批：点会话回原窗口处理")
 
         focus_menu = menu.addMenu("专注模式")
         fgroup = QActionGroup(focus_menu)
@@ -1473,6 +1657,12 @@ class Pet(QWidget):
     def _toggle(self, attr, key, checked):
         setattr(self, attr, checked)
         self.settings.setValue(key, checked)
+        if key == "codex":
+            self.codex.set_enabled(checked)
+            if not checked:
+                self.tracker.sessions = {sid:s for sid,s in self.tracker.sessions.items() if s.provider != 'codex'}
+            self.on_codex_quota()
+            self._refresh_views()
         if key == "on_top":
             self.apply_on_top()
         if key == "bubble" and not checked:
@@ -1480,11 +1670,7 @@ class Pet(QWidget):
         if key == "follow" and checked:
             self.walk_target = None
         if key == "hud":
-            if checked:
-                self.hud.show()
-                self._place_hud(time.time())
-            else:
-                self.hud.hide()
+            self._sync_hud_hover(time.time())
         if key == "fetch_quota":
             self.usage.set_fetch_enabled(checked)
         if key in ("approvals", "dnd"):
@@ -1533,8 +1719,7 @@ class Pet(QWidget):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.on_top)
         self.show()
         self.hud.setWindowFlag(Qt.WindowStaysOnTopHint, self.on_top)
-        if self.hud_on:
-            self.hud.show()
+        self._sync_hud_hover(time.time())
 
     def reset_position(self):
         rect = QGuiApplication.primaryScreen().availableGeometry()
@@ -1650,7 +1835,7 @@ class Pet(QWidget):
             p.end()
         self._tray_base = base
         self.tray = QSystemTrayIcon(QIcon(base), self)
-        self.tray.setToolTip("Claude 桌宠")
+        self.tray.setToolTip("Claude + Codex 桌宠")
         self._tray_menu = QMenu()
         self._tray_menu.aboutToShow.connect(self._fill_tray_menu)
         self.tray.setContextMenu(self._tray_menu)
@@ -1681,7 +1866,9 @@ class Pet(QWidget):
                 p.drawEllipse(QRectF(38, 38, 24, 24))
                 p.end()
             self.tray.setIcon(QIcon(pm))
-        lines = [f"Claude 桌宠 · {STATES[self.state]['label']}", self.usage.brief()]
+        lines = [f"Claude + Codex · {STATES[self.state]['label']}", "Claude：" + self.usage.brief()]
+        if self.codex_on:
+            lines.append("Codex：" + self.codex.brief())
         if self.tracker.sessions:
             lines.append(self._sessions_line())
         tip = "\n".join(lines)
@@ -1691,7 +1878,7 @@ class Pet(QWidget):
 
     def _on_tray(self, reason):
         if reason == QSystemTrayIcon.Trigger:
-            self.open_panel()
+            self.open_mini()
         elif reason == QSystemTrayIcon.DoubleClick:
             self.show()
             self.raise_()
@@ -1713,7 +1900,7 @@ class Pet(QWidget):
             folder = data_path("debug")
             os.makedirs(folder, exist_ok=True)
             for name, w in (("pet", self), ("hud", self.hud), ("bubble", self.bubble),
-                            ("card", self.card), ("panel", self.panel)):
+                            ("card", self.card), ("panel", self.panel), ("mini",self.mini)):
                 path = os.path.join(folder, name + ".png")
                 if w is not None and w.isVisible():
                     w.grab().save(path)
@@ -1723,6 +1910,8 @@ class Pet(QWidget):
             self.open_panel(force_show=True, tab=int(q.get("tab") or 0))
         elif what == "hide_panel" and self.panel is not None:
             self.panel.hide()
+        elif what == 'mini':
+            self.open_mini(force_show=True,tab=int(q.get('tab') or 0))
 
     # ==================================================================
     def quit_app(self):
@@ -1735,6 +1924,11 @@ class Pet(QWidget):
         self.card.hide()
         if self.panel is not None:
             self.panel.hide()
+        if self.mini is not None:
+            self.mini.hide()
+        self.mini_hotkey.close()
+        self.chat.close()
         self.usage.stop()
+        self.codex.stop()
         self.server.stop()
         QApplication.quit()

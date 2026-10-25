@@ -130,6 +130,9 @@ class Session:
     def __init__(self, sid):
         now = time.time()
         self.id = sid
+        self.provider = "claude"
+        self.tokens = {}
+        self.turn_tokens = 0
         self.cwd = ""
         self.project = ""
         self.title = ""
@@ -202,6 +205,11 @@ class Session:
 
     def facts(self):
         parts = []
+        if self.model:
+            parts.append(self.model)
+        if self.provider == "codex" and self.tokens.get("total_tokens"):
+            from .common import fmt_tokens
+            parts.append(f"累计 {fmt_tokens(self.tokens['total_tokens'])} tokens")
         if self.changed:
             parts.append(f"改了 {len(self.changed)} 个文件")
         todo = self.todo_text()
@@ -221,10 +229,12 @@ class Session:
 
     def to_dict(self, privacy=False):
         return {
-            "id": self.id, "name": self.name(), "state": self.state, "status": self.status_text(),
+            "id": self.id, "name": self.name(), "provider": self.provider,
+            "state": self.state, "status": self.status_text(),
             "activity": self.activity_text(privacy), "facts": self.facts(), "source": self.source,
             "unseen": self.unseen, "last_message": "" if privacy else self.last_message,
             "window": self.window_title, "turns": self.turns, "turn_cost": self.turn_cost,
+            "tokens": self.tokens, "turn_tokens": self.turn_tokens,
         }
 
 

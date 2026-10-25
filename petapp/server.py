@@ -142,8 +142,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply({"ok": True, "state": STATUS.get("state"), "base": STATUS.get("base"),
                          "geom": STATUS.get("geom")})
             return
+        if path == '/mini/status':
+            self._reply({'ok':True, **(STATUS.get('mini') or {})})
+            return
         if path == "/usage":
-            self._reply({"ok": True, **(STATUS.get("usage") or {})})
+            self._reply({"ok": True, **(STATUS.get("usage") or {}),
+                         "codex": STATUS.get("codex_usage") or {}})
             return
         if path == "/sessions":
             self._reply({"ok": True, "sessions": STATUS.get("sessions") or []})

@@ -18,8 +18,9 @@
     pet.bat say "你好"           让她说一句话
     pet.bat run <命令>           帮你跑一条命令：跑完庆祝、失败了晕一下，还告诉你花了多久
     pet.bat usage               看额度还剩多少、今天用了多少
-    pet.bat sessions            看每个 Claude Code 会话在干什么
-    pet.bat panel [页]           打开用量面板，页可以是 额度 / 统计 / 会话 / 电脑
+    pet.bat sessions            看每个 Claude / Codex 会话在干什么
+    pet.bat panel [页]           打开面板：额度 / 统计 / 会话 / 电脑 / codex
+    pet.bat mini [tasks]        打开迷你聊天窗，或迷你任务页
     pet.bat widget <名字> <值> [秒]   在面板里放个小组件，比如 pet.bat widget 构建 通过 600
     pet.bat status              打印她现在的状态
     pet.bat                     列出所有能用的词
@@ -54,7 +55,7 @@ ALIASES = {
     "idle": "wake", "待机": "wake", "wake": "wake",
     "away": "away", "back": "back",
 }
-SPECIAL = ["say", "run", "usage", "sessions", "panel", "widget", "status"]
+SPECIAL = ["say", "run", "usage", "sessions", "panel", "widget", "status", "mini"]
 
 # 这几个是"桌宠自己的"事件，不该被算进 Claude Code 的统计
 LOCAL_DONE = {"done": "cmd_done", "tool_failed": "cmd_failed", "tool_bash": "cmd_start"}
@@ -131,6 +132,13 @@ def main():
         print(f"她现在：{st.get('state')}（常驻 {st.get('base')}）")
         return 0
 
+    if word == 'mini':
+        try:
+            call('/e/mini',port,{'text':' '.join(rest)})
+            return 0
+        except Exception as err:
+            return not_running(port,err)
+
     if word in ("usage", "额度", "用量"):
         try:
             u = call("/usage", port)
@@ -138,6 +146,9 @@ def main():
             return not_running(port, err)
         for line in u.get("lines") or ["还没拿到额度数据，等几秒再试"]:
             print(line)
+        codex = u.get('codex') or {}
+        if codex.get('enabled'):
+            print('Codex：' + (codex.get('brief') or '等待用量记录'))
         return 0
 
     if word in ("sessions", "会话"):
@@ -147,9 +158,10 @@ def main():
             return not_running(port, err)
         sessions = data.get("sessions") or []
         if not sessions:
-            print("现在没有 Claude Code 会话。")
+            print("现在没有 Claude / Codex 会话。")
         for s in sessions:
-            line = f"● {s.get('name')}：{s.get('status')}"
+            provider = 'Codex' if s.get('provider') == 'codex' else 'Claude'
+            line = f"● [{provider}] {s.get('name')}：{s.get('status')}"
             if s.get("activity"):
                 line += f" · {s['activity']}"
             print(line)

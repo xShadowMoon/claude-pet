@@ -71,6 +71,8 @@ if IS_WIN:
     user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
     user32.GetWindow.restype = wintypes.HWND
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
     user32.IsIconic.argtypes = [wintypes.HWND]
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.SetForegroundWindow.argtypes = [wintypes.HWND]
@@ -192,6 +194,27 @@ def find_window(pids):
             if wpid == pid:
                 return hwnd, title
     return None, ""
+
+
+def provider_window(provider):
+    """Read-only lookup of a provider's main window, never a pet/overlay window."""
+    if provider != 'codex' or not IS_WIN:
+        return None, ''
+    table = process_table()
+    candidates = []
+    for hwnd, pid, title in top_windows():
+        exe = table.get(pid, (0, ''))[1].lower()
+        if exe not in ('codex.exe', 'chatgpt.exe'):
+            continue
+        rect = wintypes.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            width, height = rect.right - rect.left, rect.bottom - rect.top
+            if width >= 500 and height >= 350:
+                candidates.append((width * height, hwnd, title))
+    if candidates:
+        _, hwnd, title = max(candidates)
+        return hwnd, title
+    return None, ''
 
 
 def session_window(chain):

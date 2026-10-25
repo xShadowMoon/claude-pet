@@ -25,7 +25,7 @@ from .sysinfo import SysInfo, fmt_bytes
 FONT_FAMILIES = ["Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI"]
 MODEL_RGB = [ROSE, WEEK, GOOD, WARN, (160, 120, 230), (90, 180, 210)]
 MIX_RGB = {"Claude Code": ROSE, "聊天": WEEK, "Cowork": GOOD, "其它": (200, 180, 190)}
-TABS = ("额度", "用量统计", "会话", "电脑")
+TABS = ("额度", "会话", "统计")
 
 QSS = """
 QWidget { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; font-size: 13px; color: rgb(72, 56, 66); }
@@ -46,6 +46,9 @@ QFrame#row:hover { border: 1px solid rgb(236, 170, 196); background: rgb(255, 24
 QPushButton#tab { border: none; padding: 5px 12px; border-radius: 12px; color: rgb(150, 128, 140); background: transparent; font-size: 13px; }
 QPushButton#tab:checked { background: rgb(252, 228, 238); color: rgb(214, 92, 140); font-weight: 700; }
 QPushButton#tab:hover:!checked { background: rgb(253, 240, 245); }
+QPushButton#providerTab { border: 1px solid rgb(242, 213, 227); border-radius: 12px; padding: 9px 20px; font-size: 16px; font-weight: 700; background: rgb(255, 249, 252); color: rgb(150, 128, 140); }
+QPushButton#providerTab:checked { background: rgb(252, 228, 238); border-color: rgb(236, 170, 196); color: rgb(214, 92, 140); }
+QPushButton#providerTab[provider="codex"]:checked { background: rgb(239, 235, 255); border-color: rgb(189, 180, 234); color: rgb(126, 108, 192); }
 QPushButton#icon { border: none; border-radius: 10px; padding: 2px 8px; color: rgb(150, 128, 140); background: transparent; font-size: 15px; }
 QPushButton#icon:hover { background: rgb(252, 228, 238); color: rgb(214, 92, 140); }
 QScrollArea { background: transparent; border: none; }
@@ -189,8 +192,9 @@ class RollLabel(QLabel):
 
 
 class BarChart(QWidget):
-    def __init__(self):
+    def __init__(self,formatter=fmt_money):
         super().__init__()
+        self.formatter=formatter
         self.setMinimumHeight(120)
         self.setMouseTracking(True)
         self.values, self.labels, self.tips, self.ticks, self.hl = [], [], [], set(), -1
@@ -228,7 +232,7 @@ class BarChart(QWidget):
         slot = plot.width() / n
         bw = max(2.0, slot * 0.64)
         p.setPen(QColor(170, 150, 160))
-        p.drawText(QRectF(plot.x(), 0, plot.width(), 14), Qt.AlignLeft | Qt.AlignVCenter, f"最高 {fmt_money(vmax)}")
+        p.drawText(QRectF(plot.x(), 0, plot.width(), 14), Qt.AlignLeft | Qt.AlignVCenter, f"最高 {self.formatter(vmax)}")
         p.setPen(QColor(240, 222, 230))
         p.drawLine(plot.bottomLeft(), plot.bottomRight())
         p.setPen(Qt.NoPen)
@@ -571,7 +575,8 @@ class StatsPage(QWidget):
         for w in (self.head, self.chart_box, self.model_box, self.sess_box):
             w.setVisible(ready)
         stats = getattr(self.pet, "stats", {}) or {}
-        self.local_box.setVisible(self.range == "r1")
+        # These old hook counters combine both providers. Do not label them Claude statistics.
+        self.local_box.hide()
         parts = [f"{label} {stats.get(k, 0)}" for k, label in self.LOCAL]
         work = int(stats.get("work_s", 0) or 0)
         if work:
@@ -579,7 +584,7 @@ class StatsPage(QWidget):
         self.local_text.setText("，".join(parts))
         if not ready:
             return
-        key = (snap.get("at"), self.range)
+        key = (snap.get("at"), self.range, self.pet.privacy)
         if key == self._key:
             return
         self._key = key
@@ -631,8 +636,9 @@ class StatsPage(QWidget):
             return
         for _sid, title, cost, tokens in sessions[:5]:
             row = QHBoxLayout()
-            name = make_label(clip(title, 22), "sub")
-            name.setToolTip(title)
+            private = getattr(self.pet,'privacy',False)
+            name = make_label('Claude 会话' if private else clip(title, 22), "sub")
+            name.setToolTip('' if private else title)
             row.addWidget(name)
             row.addStretch(1)
             row.addWidget(make_label(f"{fmt_money(cost)} · {fmt_tokens(tokens)}", "sub"))
@@ -658,7 +664,8 @@ class SessionRow(QFrame):
         dot = QLabel("●")
         dot.setStyleSheet("color: rgb(%d, %d, %d); font-size: 12px;" % STATE_RGB.get(s.color_key(), (190, 180, 186)))
         top.addWidget(dot)
-        top.addWidget(make_label(clip(s.name(), 22), "h"))
+        provider = "Codex" if s.provider == "codex" else "Claude"
+        top.addWidget(make_label(f"{provider} · {clip(s.name(), 18)}", "h"))
         top.addStretch(1)
         top.addWidget(make_label(s.status_text(), "sub"))
         lay.addLayout(top)
@@ -678,9 +685,10 @@ class SessionRow(QFrame):
 
 
 class SessionsPage(QWidget):
-    def __init__(self, pet):
+    def __init__(self, pet, provider='claude'):
         super().__init__()
         self.pet = pet
+        self.provider = provider
         self._sig = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -690,13 +698,15 @@ class SessionsPage(QWidget):
         lay.addLayout(self.list_lay)
         self.widget_box, self.widget_lay = make_box()
         lay.addWidget(self.widget_box)
-        lay.addWidget(make_label("点一个会话，就把它所在的窗口叫到前面。闲置太久的会话会自动收起来，"
-                                 "时长在右键菜单的 Claude Code 里改。", "tiny", wrap=True))
+        note='只列出 Claude 会话。点一个会话打开原窗口；需要确认时仍可用桌宠的确认卡片。'
+        if provider=='codex':
+            note='只列出 Codex 会话。外部会话的确认请回原窗口处理；Mini 发起的请求可在 Mini 内处理。'
+        lay.addWidget(make_label(note, "tiny", wrap=True))
         lay.addStretch(1)
 
     def refresh(self):
         pet = self.pet
-        sessions = pet.tracker.ordered()
+        sessions = [s for s in pet.tracker.ordered() if s.provider == self.provider]
         sig = tuple((s.id, s.state, s.activity, s.status_text(), s.facts(), s.unseen, s.last_message[:24])
                     for s in sessions) + (pet.privacy,)
         wsig = tuple((w["id"], w["title"], w["value"]) for w in pet.widgets.values())
@@ -705,13 +715,14 @@ class SessionsPage(QWidget):
         self._sig = (sig, wsig)
         clear_layout(self.list_lay)
         if not sessions:
-            self.list_lay.addWidget(make_label("现在没有 Claude Code 会话在跑。新开一个会话，或者在已有会话里发条消息，"
+            name='Codex' if self.provider=='codex' else 'Claude'
+            self.list_lay.addWidget(make_label(f"现在没有 {name} 会话在跑。新开一个会话，或者在已有会话里发条消息，"
                                                "这里就会出现。", "sub", wrap=True))
         for s in sessions:
             self.list_lay.addWidget(SessionRow(s, pet))
         clear_layout(self.widget_lay)
-        self.widget_box.setVisible(bool(pet.widgets))
-        if pet.widgets:
+        self.widget_box.setVisible(bool(pet.widgets) and self.provider=='claude')
+        if pet.widgets and self.provider=='claude':
             self.widget_lay.addWidget(make_label("小组件", "h"))
             for w in pet.widgets.values():
                 row = QHBoxLayout()
@@ -726,6 +737,168 @@ class SessionsPage(QWidget):
 # ---------------------------------------------------------------------------
 # 电脑
 # ---------------------------------------------------------------------------
+
+class CodexPage(QWidget):
+    def __init__(self, pet):
+        super().__init__()
+        self.pet = pet
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+        self.info = make_label("", "sub", wrap=True)
+        lay.addWidget(self.info)
+        self.rows = {}
+        for key, label in (("five_hour", "5 小时窗口"), ("seven_day", "每周额度")):
+            box, col = make_box()
+            col.addWidget(make_label(label, "h"))
+            value = make_label("等待 Codex 用量记录", "mid")
+            col.addWidget(value)
+            bar = Bar(9)
+            col.addWidget(bar)
+            note = make_label("", "tiny", wrap=True)
+            col.addWidget(note)
+            lay.addWidget(box)
+            self.rows[key] = value, bar, note
+        box, col = make_box()
+        col.addWidget(make_label("当前 Codex 会话用量", "h"))
+        self.tokens = make_label("", "sub", wrap=True)
+        col.addWidget(self.tokens)
+        lay.addWidget(box)
+        lay.addWidget(make_label("额度来自 Codex 自己保存的本机记录，工作时自动更新。"
+                                "暂停使用后数字可能较旧，下一次 Codex 请求会刷新。\n"
+                                "这里显示实际 token 数，不把订阅额度换算成美元。", "tiny", wrap=True))
+        lay.addStretch(1)
+
+    def refresh(self):
+        hub = self.pet.codex
+        plan = (hub.quota or {}).get('plan')
+        self.info.setText(('Codex · ' + plan.capitalize() if plan else 'Codex') + '\n' +
+                          (hub.error or ('本机记录 · ' + fmt_ago((hub.quota or {}).get('fetched_at')) + '更新')))
+        for key, (value, bar, note) in self.rows.items():
+            w = hub.window(key)
+            if not w:
+                value.setText('等待 Codex 用量记录')
+                bar.set(0, MUTED)
+                note.setText('在 Codex 里发送一条消息后，会自动读到用量。')
+                continue
+            remain = max(0., 100. - w['used'])
+            value.setText(f"剩 {remain:.0f}% · 已用 {w['used']:.0f}%")
+            bar.set(remain / 100., remain_rgb(remain))
+            reset = w.get('resets_at')
+            text = f'{fmt_clock(reset)} 重置' if reset else '没有重置时间'
+            if w.get('expired'):
+                text += ' · 已过重置时间，等待 Codex 新数据'
+            elif reset:
+                text += f' · 还有 {fmt_span(reset - time.time())}'
+            note.setText(text)
+        lines = []
+        for s in self.pet.tracker.ordered():
+            if s.provider != 'codex':
+                continue
+            title = '会话' if self.pet.privacy else clip(s.name(), 22)
+            total = s.tokens.get('total_tokens') or 0
+            cached = s.tokens.get('cached_input_tokens') or 0
+            lines.append(f'{title}\n累计 {fmt_tokens(total)} tokens · 缓存命中 {fmt_tokens(cached)}'
+                         f' · 本轮 {fmt_tokens(s.turn_tokens)}')
+        self.tokens.setText('\n\n'.join(lines) or '当前没有活跃的 Codex 会话。')
+
+
+class CodexStatsPage(QWidget):
+    RANGES = (("r1", "今天"), ("r7", "近 7 天"), ("r30", "近 30 天"))
+
+    def __init__(self, hub, pet):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Preferred,QSizePolicy.Minimum)
+        self.hub, self.pet = hub, pet
+        self.range='r1'
+        self._key=None
+        lay=QVBoxLayout(self)
+        lay.setContentsMargins(0,0,0,0)
+        lay.setSpacing(10)
+        row=QHBoxLayout()
+        self.group=QButtonGroup(self)
+        for i,(_,text) in enumerate(self.RANGES):
+            b=QPushButton(text)
+            b.setObjectName('tab')
+            b.setCheckable(True)
+            b.setChecked(i==0)
+            self.group.addButton(b,i)
+            row.addWidget(b)
+        row.addStretch(1)
+        self.group.idClicked.connect(self._pick)
+        lay.addLayout(row)
+        self.loading=make_label('正在整理 Codex 本机用量记录…','sub',wrap=True)
+        lay.addWidget(self.loading)
+        self.head,col=make_box()
+        col.addWidget(make_label('Codex 实际 token 用量','sub'))
+        self.total=RollLabel(fmt_tokens,'big')
+        col.addWidget(self.total)
+        self.details=make_label('','sub',wrap=True)
+        self.details.setMinimumHeight(48)
+        col.addWidget(self.details)
+        lay.addWidget(self.head)
+        self.chart_box,col=make_box()
+        self.chart_title=make_label('','h')
+        col.addWidget(self.chart_title)
+        self.chart=BarChart(lambda n:fmt_tokens(n)+' tokens')
+        col.addWidget(self.chart)
+        self.chart_box.setMinimumHeight(165)
+        lay.addWidget(self.chart_box)
+        self.models,self.models_lay=make_box()
+        lay.addWidget(self.models)
+        self.sessions,self.sessions_lay=make_box()
+        lay.addWidget(self.sessions)
+        lay.addWidget(make_label('只统计 Codex 本机记录（含子任务），不混入 Claude。输入已包含缓存读取，输出已包含思考 token；不把这些子项重复加到总数。','tiny',wrap=True))
+        lay.addStretch(1)
+
+    def _pick(self,idx):
+        self.range=self.RANGES[idx][0]
+        self._key=None
+        self.refresh()
+
+    def refresh(self):
+        snap=self.hub.local or {}
+        ready=bool(snap.get('ready'))
+        self.loading.setVisible(not ready)
+        for w in (self.head,self.chart_box,self.models,self.sessions):
+            w.setVisible(ready)
+        if not ready:
+            return
+        key=(snap.get('at'),self.range,self.pet.privacy)
+        if key==self._key:
+            return
+        self._key=key
+        s=snap.get(self.range) or {}
+        self.total.set_value(s.get('tokens',0))
+        self.details.setText(f"{s.get('msgs',0)} 次响应 · {s.get('nsessions',0)} 个用量会话\n"
+                             f"输入 {fmt_tokens(s.get('in',0))} · 输出 {fmt_tokens(s.get('out',0))}\n"
+                             f"其中缓存 {fmt_tokens(s.get('cached',0))} · 思考 {fmt_tokens(s.get('reasoning',0))}")
+        if self.range=='r1':
+            values=s.get('hours') or [0]*24
+            self.chart_title.setText('今天每小时（tokens）')
+            self.chart.set_data(values,[str(h) for h in range(24)],
+                [f'{h}:00–{h}:59 · {fmt_tokens(v)} tokens' for h,v in enumerate(values)],
+                {0,6,12,18,23},time.localtime().tm_hour)
+        else:
+            series=s.get('series') or []
+            n=len(series)
+            ticks=set(range(n)) if n<=7 else {i for i in range(n) if (n-1-i)%5==0}
+            self.chart_title.setText('每天（tokens）')
+            self.chart.set_data([v for _,v in series],[d[5:].replace('-','/') for d,_ in series],
+                                 [f'{d} · {fmt_tokens(v)} tokens' for d,v in series],ticks,n-1)
+        clear_layout(self.models_lay)
+        self.models_lay.addWidget(make_label('按模型','h'))
+        for i,(model,tokens,count) in enumerate(s.get('models') or []):
+            self.models_lay.addWidget(make_label(f'{model} · {fmt_tokens(tokens)} tokens · {count} 次','sub',wrap=True))
+            bar=Bar(5)
+            bar.set(tokens/max(s.get('tokens',0),1),MODEL_RGB[i%len(MODEL_RGB)])
+            self.models_lay.addWidget(bar)
+        clear_layout(self.sessions_lay)
+        self.sessions_lay.addWidget(make_label('用量最多的会话','h'))
+        for _,title,tokens,count in s.get('sessions') or []:
+            title='Codex 会话' if self.pet.privacy else clip(title,25)
+            self.sessions_lay.addWidget(make_label(f'{title}\n{fmt_tokens(tokens)} tokens · {count} 次响应','sub',wrap=True))
+
 
 class SystemPage(QWidget):
     ROWS = (("cpu", "CPU"), ("mem", "内存"), ("gpu", "显卡"), ("vram", "显存"), ("disk", "系统盘"), ("battery", "电池"))
@@ -822,9 +995,14 @@ class UsagePanel(QWidget):
         self.pet = pet
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setWindowTitle("Claude 用量")
+        self.setWindowTitle("Claude + Codex 用量")
         self.setStyleSheet(QSS)
         self.info = SysInfo(cpu_fallback=lambda: getattr(pet.ambient, "cpu_percent", None))
+        self.provider=str(pet.settings.value('panel_provider','claude'))
+        if self.provider not in ('claude','codex'):
+            self.provider='claude'
+        self.sections={p:str(pet.settings.value('panel_section_'+p,'quota')) for p in ('claude','codex')}
+        self.section='quota'
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
@@ -838,14 +1016,33 @@ class UsagePanel(QWidget):
 
         top = QHBoxLayout()
         top.setSpacing(6)
-        top.addWidget(make_label("Claude 用量", "title"))
+        top.addWidget(make_label("Claude + Codex", "title"))
         self.plan = make_label("", "chip")
         self.plan.hide()
         top.addWidget(self.plan)
         top.addStretch(1)
+        self.system_button=QPushButton('电脑')
+        self.system_button.setObjectName('tab')
+        self.system_button.setCheckable(True)
+        self.system_button.clicked.connect(self.show_system)
+        top.addWidget(self.system_button)
         top.addWidget(self._icon_button("↻", "马上刷新额度", self._refresh_now))
         top.addWidget(self._icon_button("×", "关掉（Esc）", self.hide))
         lay.addLayout(top)
+
+        providers=QHBoxLayout()
+        providers.setSpacing(8)
+        self.providers=QButtonGroup(self)
+        for i,(provider,text) in enumerate((('claude','Claude'),('codex','Codex'))):
+            b=QPushButton(text)
+            b.setObjectName('providerTab')
+            b.setProperty('provider',provider)
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            self.providers.addButton(b,i)
+            providers.addWidget(b,1)
+        self.providers.idClicked.connect(lambda i:self.select_provider(('claude','codex')[i]))
+        lay.addLayout(providers)
 
         tabs = QHBoxLayout()
         tabs.setSpacing(2)
@@ -858,12 +1055,14 @@ class UsagePanel(QWidget):
             btn.setCursor(Qt.PointingHandCursor)
             self.tabs.addButton(btn, i)
             tabs.addWidget(btn)
-        tabs.addStretch(1)
         self.tabs.idClicked.connect(self._switch)
         lay.addLayout(tabs)
 
         self.stack = QStackedWidget()
-        self.pages = [QuotaPage(hub), StatsPage(hub, pet), SessionsPage(pet), SystemPage(self.info)]
+        self.page_keys=[('claude','quota'),('claude','sessions'),('claude','stats'),
+                        ('codex','quota'),('codex','sessions'),('codex','stats'),('system','system')]
+        self.pages = [QuotaPage(hub),SessionsPage(pet,'claude'),StatsPage(hub,pet),
+                      CodexPage(pet),SessionsPage(pet,'codex'),CodexStatsPage(pet.codex,pet),SystemPage(self.info)]
         for page in self.pages:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -893,6 +1092,9 @@ class UsagePanel(QWidget):
         self.timer.start(1000)
         hub.quota_changed.connect(self._on_data)
         hub.local_changed.connect(self._on_data)
+        pet.codex.quota_changed.connect(self._on_data)
+        pet.codex.stats_changed.connect(self._on_data)
+        self.select_provider(self.provider)
 
     def _icon_button(self, text, tip, slot):
         btn = QPushButton(text)
@@ -903,19 +1105,49 @@ class UsagePanel(QWidget):
         return btn
 
     def _refresh_now(self):
-        self.hub.refresh_quota(force=True)
+        (self.pet.codex if self.provider=='codex' else self.hub).refresh_quota(force=True)
         self.status.setText("正在刷新……")
 
     def _switch(self, idx):
-        self.stack.setCurrentIndex(idx)
-        self.info.set_active(idx == 3 and self.isVisible())
+        self.navigate(self.provider,('quota','sessions','stats')[idx])
+
+    def select_provider(self,provider):
+        section=self.sections.get(provider,'quota')
+        self.navigate(provider,section if section in ('quota','sessions','stats') else 'quota')
+
+    def navigate(self,provider,section):
+        if (provider,section) not in self.page_keys:
+            return
+        self.provider,self.section=provider,section
+        self.sections[provider]=section
+        self.pet.settings.setValue('panel_provider',provider)
+        self.pet.settings.setValue('panel_section_'+provider,section)
+        self.providers.button(0 if provider=='claude' else 1).setChecked(True)
+        self.tabs.button(('quota','sessions','stats').index(section)).setChecked(True)
+        self.system_button.setChecked(False)
+        self.stack.setCurrentIndex(self.page_keys.index((provider,section)))
+        self.info.set_active(False)
+        self.refresh()
+
+    def show_system(self):
+        self.section='system'
+        self.tabs.setExclusive(False)
+        for b in self.tabs.buttons():
+            b.setChecked(False)
+        self.tabs.setExclusive(True)
+        self.stack.setCurrentIndex(self.page_keys.index(('system','system')))
+        self.system_button.setChecked(True)
+        self.info.set_active(self.isVisible())
         self.refresh()
 
     def show_tab(self, idx):
-        btn = self.tabs.button(idx)
-        if btn is not None:
-            btn.setChecked(True)
-        self._switch(idx)
+        # Preserve the public CLI/mini shortcuts from earlier releases.
+        routes={0:('claude','quota'),1:('claude','stats'),2:('claude','sessions'),
+                4:('codex','quota'),5:('codex','sessions'),6:('codex','stats')}
+        if idx==3:
+            self.show_system()
+        elif idx in routes:
+            self.navigate(*routes[idx])
 
     def _on_data(self):
         if self.isVisible():
@@ -924,14 +1156,19 @@ class UsagePanel(QWidget):
     def refresh(self):
         if not self.isVisible():
             return
-        q = self.hub.quota or {}
+        q = (self.pet.codex.quota if self.provider == 'codex' else self.hub.quota) or {}
         plan = str(q.get("plan") or "").strip()
         self.plan.setText(plan.capitalize())
-        self.plan.setVisible(bool(plan))
+        self.plan.setVisible(bool(plan) and self.section!='system')
         self.pages[self.stack.currentIndex()].refresh()
         self.status.setText(self._status_text())
 
     def _status_text(self):
+        if self.section=='system':
+            return '电脑状态 · Claude 和 Codex 共用'
+        if self.provider == 'codex':
+            local=self.pet.codex.local or {}
+            return self.pet.codex.error or ('仅 Codex 数据 · '+fmt_ago(local.get('at'))+'整理')
         bits = []
         q = self.hub.quota
         if q:
@@ -957,7 +1194,7 @@ class UsagePanel(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self.info.set_active(self.stack.currentIndex() == 3)
+        self.info.set_active(self.section == 'system')
         self.refresh()
 
     def hideEvent(self, event):

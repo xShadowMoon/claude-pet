@@ -205,7 +205,10 @@ def check_usage(port):
            fix="等几秒再跑一次；还不行就打开 data/pet.log 看看报了什么错")
     try:
         s = http_get(f"http://127.0.0.1:{port}/sessions")
-        print(f"        她现在看到 {len(s.get('sessions') or [])} 个 Claude Code 会话")
+        print(f"        她现在看到 {len(s.get('sessions') or [])} 个 Claude / Codex 会话")
+        codex = u.get('codex') or {}
+        if codex.get('enabled'):
+            print('        Codex：' + (codex.get('brief') or '等待用量记录'))
     except Exception:
         pass
 
