@@ -1,4 +1,4 @@
-"""Compact chat + task window. Both provider runtimes start only on Send."""
+"""提供迷你聊天、任务进度、草稿和权限操作。"""
 import json
 from pathlib import Path
 import time
