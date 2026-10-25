@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""把桌宠的 hook 写进 Claude Code 的设置里。
+"""安装、备份或移除桌宠 hooks 与状态栏配置。
 
 原理：Claude Code 每做一件事都会触发一个 hook，我们让它调一个小脚本，脚本用 curl
 把事件原样转给桌宠开的本地端口。curl 是 Windows 10 自带的，不用另外装。
