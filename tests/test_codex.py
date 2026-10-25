@@ -1,3 +1,5 @@
+"""验证 Codex 事件解析、状态转换与增量读取。"""
+
 import datetime
 import json
 from pathlib import Path
