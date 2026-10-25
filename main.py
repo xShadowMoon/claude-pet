@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Claude 桌宠入口。
+"""启动日志、单实例检查和 Qt 桌宠应用。
 
 用法：
     python main.py            正常启动
