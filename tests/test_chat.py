@@ -1,3 +1,5 @@
+"""验证 Mini 会话隔离、消息流、续聊与权限决定。"""
+
 import io
 import json
 from pathlib import Path
