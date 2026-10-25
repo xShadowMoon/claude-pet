@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Purpose: Forward lifecycle events to the local pet on macOS or Linux.
 # 桌宠通知器（macOS / Linux）。Claude Code 的 hook 会调它，把事件原样转给桌宠。
 #   用法: claude-pet-notify.sh <事件名> [端口] [wake]
 # 第三个参数是 wake 的时候，桌宠没开就顺手把她叫起来（data/no-autowake 存在就不叫）。
