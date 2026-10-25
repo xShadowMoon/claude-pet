@@ -1,4 +1,4 @@
-"""One global toggle shortcut. Windows releases the registration on process exit."""
+"""注册 Mini 全局快捷键并处理组合键冲突。"""
 import ctypes
 import sys
 from ctypes import wintypes
