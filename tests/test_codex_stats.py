@@ -1,3 +1,5 @@
+"""验证历史统计的去重、日期范围和缓存恢复。"""
+
 import datetime
 import json
 from pathlib import Path
